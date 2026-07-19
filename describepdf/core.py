@@ -251,6 +251,9 @@ def convert_pdf_to_markdown(
             else:
                 logger.info(f"Processing all {total_pages} pages.")
 
+            pages_done = 0
+            pages_start = time.time()
+
             for i in selected_indices:
                 page = pages[i]
                 page_num = i + 1
@@ -371,6 +374,12 @@ def convert_pdf_to_markdown(
 
                     all_descriptions.append(page_description if page_description else "*No description available.*")
 
+                    # Live average-pace monitor, shown in the progress status
+                    pages_done += 1
+                    pace = (time.time() - pages_start) / pages_done
+                    pace_note = f" — avg pace {pace:.1f} s/page ({60.0 / pace:.1f} pages/min)" if pace > 0 else ""
+                    progress_callback(current_progress, f"Page {page_num}/{total_pages} done{pace_note}")
+
                 except ConversionError:
                     # Let critical errors propagate up
                     raise
@@ -393,6 +402,8 @@ def convert_pdf_to_markdown(
         end_time = time.time()
         duration = end_time - start_time
         final_status = f"Conversion completed successfully in {duration:.2f} seconds."
+        if pages_done:
+            final_status += f" Average pace: {(end_time - pages_start) / pages_done:.1f} s/page over {pages_done} page(s)."
         progress_callback(1.0, final_status)
         logger.info(final_status)
 
@@ -412,13 +423,15 @@ def convert_folder_to_markdown(
     output_dir: str,
     cfg: Dict[str, Any],
     progress_callback: Callable[[float, str], None],
-    overwrite: bool = False
+    overwrite: bool = False,
+    recursive: bool = False,
+    preserve_structure: bool = False
 ) -> Tuple[str, List[Tuple[str, str]]]:
     """
     Convert every PDF in a folder to a Markdown description file.
 
-    Each `<name>.pdf` in input_dir (top level only) produces `<name>.md` in
-    output_dir — filenames are preserved apart from the extension.
+    Each `<name>.pdf` produces `<name>.md` — filenames are preserved apart
+    from the extension.
 
     Args:
         input_dir: Folder containing the PDF files to convert
@@ -426,9 +439,14 @@ def convert_folder_to_markdown(
         cfg: Configuration dictionary applied to every file
         progress_callback: Function accepting (float_progress, string_status)
         overwrite: Whether to re-convert files whose .md already exists
+        recursive: Also convert PDFs in subfolders (all levels)
+        preserve_structure: Mirror the input subfolder layout under output_dir;
+            when False, all .md files land flat in output_dir, and files whose
+            names would collide are reported as failures rather than
+            silently overwritten
 
     Returns:
-        tuple: (summary_message, list of (filename, outcome) pairs)
+        tuple: (summary_message, list of (relative filename, outcome) pairs)
     """
     input_path = pathlib.Path(os.path.expanduser(input_dir.strip())) if input_dir else None
     if not input_path or not input_path.is_dir():
@@ -444,9 +462,10 @@ def convert_folder_to_markdown(
         progress_callback(0.0, msg)
         return msg, []
 
+    candidates = input_path.rglob("*") if recursive else input_path.iterdir()
     pdf_files = sorted(
-        (p for p in input_path.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"),
-        key=lambda p: p.name.lower()
+        (p for p in candidates if p.is_file() and p.suffix.lower() == ".pdf"),
+        key=lambda p: str(p.relative_to(input_path)).lower()
     )
     if not pdf_files:
         msg = f"No PDF files found in {input_path}."
@@ -467,17 +486,30 @@ def convert_folder_to_markdown(
     results: List[Tuple[str, str]] = []
     converted = skipped = failed = 0
     total = len(pdf_files)
+    batch_start = time.time()
+    claimed_outputs: Dict[pathlib.Path, str] = {}
 
     for index, pdf_file in enumerate(pdf_files):
-        output_file = output_path / (pdf_file.stem + ".md")
+        rel_name = str(pdf_file.relative_to(input_path))
+
+        if preserve_structure:
+            output_file = output_path / pdf_file.relative_to(input_path).parent / (pdf_file.stem + ".md")
+        else:
+            output_file = output_path / (pdf_file.stem + ".md")
+            if output_file in claimed_outputs:
+                logger.error(f"Name collision: '{rel_name}' and '{claimed_outputs[output_file]}' both map to '{output_file.name}'.")
+                results.append((rel_name, f"failed: name collision with '{claimed_outputs[output_file]}' — enable 'Preserve subfolder structure'"))
+                failed += 1
+                continue
+        claimed_outputs[output_file] = rel_name
 
         if output_file.exists() and not overwrite:
-            logger.info(f"Skipping '{pdf_file.name}': '{output_file.name}' already exists.")
-            results.append((pdf_file.name, "skipped (output exists)"))
+            logger.info(f"Skipping '{rel_name}': '{output_file.name}' already exists.")
+            results.append((rel_name, "skipped (output exists)"))
             skipped += 1
             continue
 
-        def file_progress(progress_value: float, status: str, index: int = index, name: str = pdf_file.name) -> None:
+        def file_progress(progress_value: float, status: str, index: int = index, name: str = rel_name) -> None:
             clamped = max(0.0, min(1.0, progress_value))
             progress_callback((index + clamped) / total, f"[{index + 1}/{total}] {name}: {status}")
 
@@ -487,19 +519,24 @@ def convert_folder_to_markdown(
 
         if markdown:
             try:
+                output_file.parent.mkdir(parents=True, exist_ok=True)
                 with open(output_file, 'w', encoding='utf-8') as f:
                     f.write(markdown)
-                results.append((pdf_file.name, f"converted -> {output_file.name}"))
+                results.append((rel_name, f"converted -> {output_file.relative_to(output_path)}"))
                 converted += 1
             except Exception as e:
                 logger.error(f"Error writing '{output_file}': {e}")
-                results.append((pdf_file.name, f"failed to write output: {e}"))
+                results.append((rel_name, f"failed to write output: {e}"))
                 failed += 1
         else:
-            results.append((pdf_file.name, f"failed: {status}"))
+            results.append((rel_name, f"failed: {status}"))
             failed += 1
 
     summary = f"Batch finished: {converted} converted, {skipped} skipped, {failed} failed (of {total})."
+    processed = converted + failed
+    if processed:
+        elapsed = time.time() - batch_start
+        summary += f" Average pace: {elapsed / processed:.1f} s/file over {elapsed:.0f}s."
     progress_callback(1.0, summary)
     logger.info(summary)
     return summary, results

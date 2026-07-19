@@ -152,6 +152,50 @@ def convert_pdf_to_descriptive_markdown(
         result_markdown if result_markdown else ""
     )
 
+def save_settings(
+    ui_api_key: str,
+    ui_vlm_model: str,
+    ui_lang: str,
+    ui_use_md: bool,
+    ui_use_sum: bool,
+    ui_sum_model: str,
+    ui_page_selection: str
+) -> str:
+    """
+    Persist the Settings tab values as defaults for future sessions.
+
+    The API key is only saved when the field is non-empty; leaving it blank
+    keeps whatever key is already stored.
+    """
+    values = {
+        "DEFAULT_OR_VLM_MODEL": ui_vlm_model,
+        "DEFAULT_OR_SUMMARY_MODEL": ui_sum_model,
+        "DEFAULT_LANGUAGE": ui_lang,
+        "DEFAULT_USE_MARKITDOWN": str(bool(ui_use_md)).lower(),
+        "DEFAULT_USE_SUMMARY": str(bool(ui_use_sum)).lower(),
+        "DEFAULT_PAGE_SELECTION": ui_page_selection.strip()
+    }
+    key_note = " API key left blank, so the stored key (if any) is unchanged."
+    if ui_api_key and ui_api_key.strip():
+        values["OPENROUTER_API_KEY"] = ui_api_key.strip()
+        key_note = " API key saved."
+    config.save_user_settings(values)
+    return f"✅ Settings saved to `{config.USER_ENV_FILE}`.{key_note}"
+
+def reset_settings() -> list:
+    """Clear saved settings and repopulate the fields with the defaults."""
+    cfg = config.reset_user_settings()
+    return [
+        gr.update(value=""),
+        gr.update(value=cfg.get("or_vlm_model")),
+        gr.update(value=cfg.get("output_language")),
+        gr.update(value=""),
+        gr.update(value=cfg.get("use_markitdown")),
+        gr.update(value=cfg.get("use_summary")),
+        gr.update(value=cfg.get("or_summary_model")),
+        "🔄 Saved settings cleared; defaults restored."
+    ]
+
 def browse_pdf_folder() -> gr.update:
     """Open a native picker for the batch input folder."""
     path = folder_picker.pick_folder("Choose the folder containing your PDF files")
@@ -166,6 +210,8 @@ def convert_folder_to_descriptive_markdowns(
     ui_folder_path: str,
     ui_export_path: str,
     ui_overwrite: bool,
+    ui_recursive: bool,
+    ui_preserve_structure: bool,
     ui_api_key: str,
     ui_vlm_model: str,
     ui_lang: str,
@@ -191,6 +237,8 @@ def convert_folder_to_descriptive_markdowns(
         ui_folder_path: Folder containing the PDFs to convert
         ui_export_path: Folder where the .md files are written
         ui_overwrite: Whether to re-convert files whose .md already exists
+        ui_recursive: Also convert PDFs in subfolders (all levels)
+        ui_preserve_structure: Mirror the subfolder layout in the destination
         ui_api_key: OpenRouter API key from UI
         ui_vlm_model: VLM model name from UI
         ui_lang: Output language for descriptions
@@ -245,7 +293,9 @@ def convert_folder_to_descriptive_markdowns(
         ui_export_path,
         current_run_config,
         progress_callback_gradio,
-        overwrite=ui_overwrite
+        overwrite=ui_overwrite,
+        recursive=ui_recursive,
+        preserve_structure=ui_preserve_structure
     )
 
     report = "\n".join(f"- **{name}**: {outcome}" for name, outcome in results)
@@ -358,6 +408,17 @@ def create_ui() -> gr.Blocks:
                         scale=5
                     )
                     batch_export_browse = gr.Button("📂 Browse…", scale=1)
+                with gr.Row():
+                    batch_recursive_checkbox = gr.Checkbox(
+                        label="Include subfolders (all levels)",
+                        value=False,
+                        info="Also convert PDFs found in subfolders of the PDF folder"
+                    )
+                    batch_structure_checkbox = gr.Checkbox(
+                        label="Preserve subfolder structure",
+                        value=False,
+                        info="Mirror the subfolder layout in the export destination; when off, all .md files land in the destination root"
+                    )
                 batch_overwrite_checkbox = gr.Checkbox(
                     label="Overwrite existing .md files",
                     value=False,
@@ -374,8 +435,8 @@ def create_ui() -> gr.Blocks:
             # Configuration tab
             with gr.TabItem("Settings", id=1):
                 gr.Markdown(
-                    "Adjust settings for the *next* generation. These settings are **not** saved. "
-                    "Defaults are controlled by the `.env` file."
+                    "Adjust settings for the *next* generation. Use **Save as My Defaults** below "
+                    "to keep them across restarts."
                 )
                 api_key_input = gr.Textbox(
                     label="OpenRouter API Key" + (" (set in .env)" if has_env_api_key else ""),
@@ -419,6 +480,10 @@ def create_ui() -> gr.Blocks:
                     allow_custom_value=True,
                     info="Select or type the OpenRouter LLM model name for summaries"
                 )
+                with gr.Row():
+                    save_settings_button = gr.Button("Save as My Defaults", variant="primary")
+                    reset_settings_button = gr.Button("Reset Saved Settings")
+                settings_status = gr.Markdown("")
 
             # Prompt templates tab
             with gr.TabItem("Prompts", id=2):
@@ -441,10 +506,30 @@ def create_ui() -> gr.Blocks:
         batch_folder_browse.click(fn=browse_pdf_folder, inputs=[], outputs=[batch_folder_input])
         batch_export_browse.click(fn=browse_export_folder, inputs=[], outputs=[batch_export_input])
 
+        save_settings_button.click(
+            fn=save_settings,
+            inputs=[
+                api_key_input, vlm_model_input, output_language_input,
+                use_markitdown_checkbox, use_summary_checkbox,
+                summary_llm_model_input, page_selection_input
+            ],
+            outputs=[settings_status]
+        )
+        reset_settings_button.click(
+            fn=reset_settings,
+            inputs=[],
+            outputs=[
+                api_key_input, vlm_model_input, output_language_input,
+                page_selection_input, use_markitdown_checkbox,
+                use_summary_checkbox, summary_llm_model_input, settings_status
+            ]
+        )
+
         batch_button.click(
             fn=convert_folder_to_descriptive_markdowns,
             inputs=[
                 batch_folder_input, batch_export_input, batch_overwrite_checkbox,
+                batch_recursive_checkbox, batch_structure_checkbox,
                 api_key_input, vlm_model_input, output_language_input,
                 use_markitdown_checkbox, use_summary_checkbox, summary_llm_model_input,
                 page_selection_input

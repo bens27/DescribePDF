@@ -7,7 +7,7 @@ and prompt templates from files.
 import os
 import logging
 from typing import Dict, Any, Optional, List
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 import pathlib
 
 # Setup central logging configuration
@@ -26,6 +26,10 @@ USER_PROMPTS_DIR = USER_DIR / "prompts"
 # Free-form user notes kept alongside the prompt overrides but independent of
 # them: restoring or reloading prompt defaults never touches this file.
 FUTURE_IDEAS_FILE = USER_DIR / "future_ideas.md"
+
+# Settings saved from the UI. Loaded on startup after the working-directory
+# .env, which therefore takes precedence for keys present in both.
+USER_ENV_FILE = USER_DIR / ".env"
 
 # Default configuration values
 
@@ -74,6 +78,8 @@ def load_env_config() -> Dict[str, Any]:
         Dict[str, Any]: Dictionary with the loaded configuration
     """
     load_dotenv()
+    if USER_ENV_FILE.is_file():
+        load_dotenv(USER_ENV_FILE)
 
     # Start with the default config
     loaded_config = DEFAULT_CONFIG.copy()
@@ -243,6 +249,56 @@ def reset_user_prompts() -> Dict[str, str]:
 
     logger.info("All user prompt overrides removed; factory defaults restored.")
     return reload_prompts()
+
+def save_user_settings(values: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Persist settings to the user .env file and apply them immediately.
+
+    Values are merged with any existing saved settings, so the OpenRouter and
+    Ollama UIs can each save their own keys without clobbering the other's.
+    An empty value removes the key.
+
+    Args:
+        values: Mapping of environment variable names to their new values
+
+    Returns:
+        Dict[str, Any]: The effective configuration after saving
+    """
+    existing: Dict[str, str] = {}
+    if USER_ENV_FILE.is_file():
+        existing = {k: v for k, v in dotenv_values(USER_ENV_FILE).items() if v is not None}
+
+    for key, value in values.items():
+        if value is None or str(value).strip() == "":
+            existing.pop(key, None)
+            os.environ.pop(key, None)
+        else:
+            existing[key] = str(value).strip()
+            os.environ[key] = str(value).strip()
+
+    USER_DIR.mkdir(parents=True, exist_ok=True)
+    with open(USER_ENV_FILE, 'w', encoding='utf-8') as f:
+        for key, value in existing.items():
+            f.write(f"{key}={value}\n")
+
+    logger.info(f"Saved {len(values)} setting(s) to '{USER_ENV_FILE}'.")
+    return reload_config()
+
+def reset_user_settings() -> Dict[str, Any]:
+    """
+    Remove all settings saved from the UI, reverting to built-in defaults
+    (or the working-directory .env when running from source).
+
+    Returns:
+        Dict[str, Any]: The effective configuration after the reset
+    """
+    if USER_ENV_FILE.is_file():
+        for key in dotenv_values(USER_ENV_FILE):
+            os.environ.pop(key, None)
+        USER_ENV_FILE.unlink()
+        logger.info(f"Removed saved settings file '{USER_ENV_FILE}'.")
+
+    return reload_config()
 
 def load_future_ideas() -> str:
     """
