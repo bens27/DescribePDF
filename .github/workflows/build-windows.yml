@@ -52,8 +52,16 @@ jobs:
               Write-Output "Config fetch/parse failed: $_"
             }
           }
+          $mkdOk = $false
+          if ($configOk) {
+            python -c "import fitz; d=fitz.open(); p=d.new_page(); p.insert_text((72,72),'MarkItDown smoke 12345'); d.save('smoke-test.pdf'); d.close()"
+            python packaging/ci_markitdown_smoke.py http://127.0.0.1:7860/ smoke-test.pdf
+          }
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           Get-Content app.log, app-err.log -ErrorAction SilentlyContinue
+          if ($configOk) {
+            $mkdOk = Select-String -Path app.log, app-err.log -Pattern "Markitdown context extracted" -Quiet
+          }
           if (-not $ok) {
             Write-Error "App did not serve the UI on port 7860."
             exit 1
@@ -62,7 +70,11 @@ jobs:
             Write-Error "UI served but config check failed."
             exit 1
           }
-          Write-Output "Smoke test passed: UI served with expected tabs."
+          if (-not $mkdOk) {
+            Write-Error "MarkItDown extraction failed inside the packaged app (missing bundled data files?)."
+            exit 1
+          }
+          Write-Output "Smoke test passed: UI served, tabs present, MarkItDown extraction works."
 
       - name: Upload app artifact
         uses: actions/upload-artifact@v4

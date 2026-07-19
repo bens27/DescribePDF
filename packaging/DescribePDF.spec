@@ -11,6 +11,9 @@ datas += collect_data_files("gradio")
 datas += collect_data_files("gradio_client")
 datas += collect_data_files("safehttpx")
 datas += collect_data_files("groovy")
+# magika (markitdown's file-type detector) loads its ONNX model dir lazily;
+# without this, MarkItDown extraction fails only in the frozen app.
+datas += collect_data_files("magika")
 
 hiddenimports = collect_submodules("markitdown")
 
