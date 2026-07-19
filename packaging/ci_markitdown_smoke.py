@@ -25,7 +25,8 @@ def main() -> None:
             "mistralai/mistral-medium-3-5", "English",
             True, False,  # use_markitdown ON, summary off
             "google/gemini-2.5-flash-preview", "",
-            "", "", "", "", "",
+            True, False, False,  # descriptions on, transcription off, summary-in-output off
+            "", "", "", "", "", "",
             api_name="/convert_pdf_to_descriptive_markdown",
         )
     except Exception as e:

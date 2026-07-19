@@ -14,7 +14,7 @@ from . import config
 
 # Fixed ordering of templates as they appear in the tab and are passed to the
 # conversion function.
-PROMPT_ORDER: List[str] = ["vlm_base", "vlm_markdown", "vlm_summary", "vlm_full", "summary"]
+PROMPT_ORDER: List[str] = ["vlm_base", "vlm_markdown", "vlm_summary", "vlm_full", "vlm_transcribe", "summary"]
 
 # key -> (label, description of when it is used and its placeholders)
 PROMPT_INFO: Dict[str, Tuple[str, str]] = {
@@ -37,6 +37,11 @@ PROMPT_INFO: Dict[str, Tuple[str, str]] = {
         "Page Description + Markitdown + Summary",
         "Used when both Markitdown and summary context are enabled. "
         "Placeholders: [PAGE_NUM], [TOTAL_PAGES], [LANGUAGE], [MARKDOWN_CONTEXT], [SUMMARY_CONTEXT]"
+    ),
+    "vlm_transcribe": (
+        "Direct Transcription (model fallback)",
+        "Used when 'Direct transcription' is enabled and a page can't be confidently transcribed by "
+        "MarkItDown locally (scanned or image-heavy pages). Placeholders: [PAGE_NUM], [TOTAL_PAGES], [LANGUAGE]"
     ),
     "summary": (
         "Document Summary",

@@ -49,7 +49,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "output_language": "English",
     "use_markitdown": False,
     "use_summary": False,
-    "page_selection": None
+    "page_selection": None,
+
+    "include_descriptions": True,
+    "include_transcription": False,
+    "summary_in_output": False
 }
 
 # Mapping of prompt template identifiers to their file names
@@ -58,7 +62,8 @@ PROMPT_FILES: Dict[str, str] = {
     "vlm_base": "vlm_prompt_base.md",
     "vlm_markdown": "vlm_prompt_with_markdown.md",
     "vlm_summary": "vlm_prompt_with_summary.md",
-    "vlm_full": "vlm_prompt_full.md"
+    "vlm_full": "vlm_prompt_full.md",
+    "vlm_transcribe": "vlm_prompt_transcribe.md"
 }
 
 # Cache for loaded configuration
@@ -123,6 +128,15 @@ def load_env_config() -> Dict[str, Any]:
     
     if os.getenv("DEFAULT_PAGE_SELECTION"):
         loaded_config["page_selection"] = os.getenv("DEFAULT_PAGE_SELECTION")
+
+    if os.getenv("DEFAULT_INCLUDE_DESCRIPTIONS"):
+        loaded_config["include_descriptions"] = str(os.getenv("DEFAULT_INCLUDE_DESCRIPTIONS")).lower() == 'true'
+
+    if os.getenv("DEFAULT_INCLUDE_TRANSCRIPTION"):
+        loaded_config["include_transcription"] = str(os.getenv("DEFAULT_INCLUDE_TRANSCRIPTION")).lower() == 'true'
+
+    if os.getenv("DEFAULT_SUMMARY_IN_OUTPUT"):
+        loaded_config["summary_in_output"] = str(os.getenv("DEFAULT_SUMMARY_IN_OUTPUT")).lower() == 'true'
 
     logger.info("Configuration loaded from environment variables.")
     
@@ -408,19 +422,24 @@ def get_required_prompts_for_config(cfg: Dict[str, Any]) -> Dict[str, str]:
         if key in PROMPT_FILES and isinstance(text, str) and text.strip():
             prompts[key] = text
 
-    required_keys: List[str] = ["vlm_base"]
-    
+    required_keys: List[str] = []
+
     has_markdown = cfg.get("use_markitdown", False)
     has_summary = cfg.get("use_summary", False)
-    
-    if has_markdown and has_summary:
-        required_keys.append("vlm_full")
-    elif has_markdown:
-        required_keys.append("vlm_markdown")
-    elif has_summary:
-        required_keys.append("vlm_summary")
-        
-    if has_summary:
+
+    if cfg.get("include_descriptions", True):
+        required_keys.append("vlm_base")
+        if has_markdown and has_summary:
+            required_keys.append("vlm_full")
+        elif has_markdown:
+            required_keys.append("vlm_markdown")
+        elif has_summary:
+            required_keys.append("vlm_summary")
+
+    if cfg.get("include_transcription", False):
+        required_keys.append("vlm_transcribe")
+
+    if has_summary or cfg.get("summary_in_output", False):
         required_keys.append("summary")
         
     # Check if all required prompts are available

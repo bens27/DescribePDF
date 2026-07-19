@@ -49,10 +49,14 @@ def convert_pdf_to_descriptive_markdown(
     ui_use_sum: bool, 
     ui_sum_model: str,
     ui_page_selection: str,
+    ui_include_desc: bool,
+    ui_include_trans: bool,
+    ui_summary_output: bool,
     ui_prompt_vlm_base: str,
     ui_prompt_vlm_markdown: str,
     ui_prompt_vlm_summary: str,
     ui_prompt_vlm_full: str,
+    ui_prompt_vlm_transcribe: str,
     ui_prompt_summary: str,
     progress: gr.Progress = gr.Progress(track_tqdm=True)
 ) -> Tuple[str, gr.update, Optional[str]]:
@@ -110,9 +114,12 @@ def convert_pdf_to_descriptive_markdown(
         "use_summary": ui_use_sum,
         "summary_llm_model": ui_sum_model if ui_sum_model else env_config.get("or_summary_model"),
         "page_selection": ui_page_selection.strip() if ui_page_selection.strip() else None,
+        "include_descriptions": ui_include_desc,
+        "include_transcription": ui_include_trans,
+        "summary_in_output": ui_summary_output,
         "custom_prompts": ui_prompts.get_custom_prompts([
             ui_prompt_vlm_base, ui_prompt_vlm_markdown, ui_prompt_vlm_summary,
-            ui_prompt_vlm_full, ui_prompt_summary
+            ui_prompt_vlm_full, ui_prompt_vlm_transcribe, ui_prompt_summary
         ])
     }
 
@@ -187,7 +194,10 @@ def save_settings(
     ui_use_md: bool,
     ui_use_sum: bool,
     ui_sum_model: str,
-    ui_page_selection: str
+    ui_page_selection: str,
+    ui_include_desc: bool,
+    ui_include_trans: bool,
+    ui_summary_output: bool
 ) -> str:
     """
     Persist the Settings tab values as defaults for future sessions.
@@ -202,7 +212,10 @@ def save_settings(
         "DEFAULT_LANGUAGE": ui_lang,
         "DEFAULT_USE_MARKITDOWN": str(bool(ui_use_md)).lower(),
         "DEFAULT_USE_SUMMARY": str(bool(ui_use_sum)).lower(),
-        "DEFAULT_PAGE_SELECTION": ui_page_selection.strip()
+        "DEFAULT_PAGE_SELECTION": ui_page_selection.strip(),
+        "DEFAULT_INCLUDE_DESCRIPTIONS": str(bool(ui_include_desc)).lower(),
+        "DEFAULT_INCLUDE_TRANSCRIPTION": str(bool(ui_include_trans)).lower(),
+        "DEFAULT_SUMMARY_IN_OUTPUT": str(bool(ui_summary_output)).lower()
     }
     key_note = " API key fields left blank keep their stored keys (if any)."
     if ui_api_key and ui_api_key.strip():
@@ -227,6 +240,9 @@ def reset_settings() -> list:
         gr.update(value=cfg.get("use_markitdown")),
         gr.update(value=cfg.get("use_summary")),
         gr.update(value=cfg.get("or_summary_model")),
+        gr.update(value=cfg.get("include_descriptions")),
+        gr.update(value=cfg.get("include_transcription")),
+        gr.update(value=cfg.get("summary_in_output")),
         "🔄 Saved settings cleared; defaults restored."
     ]
 
@@ -255,10 +271,14 @@ def convert_folder_to_descriptive_markdowns(
     ui_use_sum: bool,
     ui_sum_model: str,
     ui_page_selection: str,
+    ui_include_desc: bool,
+    ui_include_trans: bool,
+    ui_summary_output: bool,
     ui_prompt_vlm_base: str,
     ui_prompt_vlm_markdown: str,
     ui_prompt_vlm_summary: str,
     ui_prompt_vlm_full: str,
+    ui_prompt_vlm_transcribe: str,
     ui_prompt_summary: str,
     progress: gr.Progress = gr.Progress(track_tqdm=True)
 ) -> Tuple[str, str]:
@@ -313,9 +333,12 @@ def convert_folder_to_descriptive_markdowns(
         "use_summary": ui_use_sum,
         "summary_llm_model": ui_sum_model if ui_sum_model else env_config.get("or_summary_model"),
         "page_selection": ui_page_selection.strip() if ui_page_selection.strip() else None,
+        "include_descriptions": ui_include_desc,
+        "include_transcription": ui_include_trans,
+        "summary_in_output": ui_summary_output,
         "custom_prompts": ui_prompts.get_custom_prompts([
             ui_prompt_vlm_base, ui_prompt_vlm_markdown, ui_prompt_vlm_summary,
-            ui_prompt_vlm_full, ui_prompt_summary
+            ui_prompt_vlm_full, ui_prompt_vlm_transcribe, ui_prompt_summary
         ])
     }
 
@@ -385,6 +408,9 @@ def create_ui() -> gr.Blocks:
     initial_lang = initial_env_config.get("output_language")
     initial_use_md = initial_env_config.get("use_markitdown")
     initial_use_sum = initial_env_config.get("use_summary")
+    initial_include_desc = initial_env_config.get("include_descriptions")
+    initial_include_trans = initial_env_config.get("include_transcription")
+    initial_summary_output = initial_env_config.get("summary_in_output")
     
     has_env_api_key = bool(initial_env_config.get("openrouter_api_key"))
 
@@ -521,6 +547,23 @@ def create_ui() -> gr.Blocks:
                     placeholder="Example: 1,3,5-10,15 (leave empty for all pages)",
                     info="Specify individual pages or ranges to process"
                 )
+                gr.Markdown("**Output content** — choose what the generated Markdown contains:")
+                with gr.Row():
+                    include_desc_checkbox = gr.Checkbox(
+                        label="Page descriptions",
+                        value=initial_include_desc,
+                        info="VLM-generated description of each page"
+                    )
+                    include_trans_checkbox = gr.Checkbox(
+                        label="Direct transcription",
+                        value=initial_include_trans,
+                        info="Verbatim page text: extracted locally with MarkItDown when reliable; the model is only called for scanned or image-heavy pages"
+                    )
+                    summary_output_checkbox = gr.Checkbox(
+                        label="Document summary",
+                        value=initial_summary_output,
+                        info="Include an LLM-generated summary of the whole document at the top of the output"
+                    )
                 with gr.Row():
                     use_markitdown_checkbox = gr.Checkbox(
                         label="Use Markitdown for extra text context",
@@ -549,7 +592,8 @@ def create_ui() -> gr.Blocks:
         # Connect UI components
         conversion_inputs = [
             pdf_input, provider_input, api_key_input, qianfan_key_input, vlm_model_input, output_language_input,
-            use_markitdown_checkbox, use_summary_checkbox, summary_llm_model_input, page_selection_input
+            use_markitdown_checkbox, use_summary_checkbox, summary_llm_model_input, page_selection_input,
+            include_desc_checkbox, include_trans_checkbox, summary_output_checkbox
         ] + prompt_editors
         conversion_outputs = [
             progress_output, download_button, markdown_output
@@ -568,7 +612,8 @@ def create_ui() -> gr.Blocks:
             inputs=[
                 provider_input, api_key_input, qianfan_key_input, vlm_model_input,
                 output_language_input, use_markitdown_checkbox, use_summary_checkbox,
-                summary_llm_model_input, page_selection_input
+                summary_llm_model_input, page_selection_input,
+                include_desc_checkbox, include_trans_checkbox, summary_output_checkbox
             ],
             outputs=[settings_status]
         )
@@ -578,7 +623,9 @@ def create_ui() -> gr.Blocks:
             outputs=[
                 provider_input, api_key_input, qianfan_key_input, vlm_model_input,
                 output_language_input, page_selection_input, use_markitdown_checkbox,
-                use_summary_checkbox, summary_llm_model_input, settings_status
+                use_summary_checkbox, summary_llm_model_input,
+                include_desc_checkbox, include_trans_checkbox, summary_output_checkbox,
+                settings_status
             ]
         )
 
@@ -589,7 +636,7 @@ def create_ui() -> gr.Blocks:
                 batch_recursive_checkbox, batch_structure_checkbox,
                 provider_input, api_key_input, qianfan_key_input, vlm_model_input, output_language_input,
                 use_markitdown_checkbox, use_summary_checkbox, summary_llm_model_input,
-                page_selection_input
+                page_selection_input, include_desc_checkbox, include_trans_checkbox, summary_output_checkbox
             ] + prompt_editors,
             outputs=[batch_progress_output, batch_results_output]
         )

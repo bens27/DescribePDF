@@ -22,6 +22,11 @@ from . import qianfan_client
 # Get logger from config module
 logger = logging.getLogger('describepdf')
 
+# Minimum characters of MarkItDown output for a page transcription to be
+# trusted without a model call; below this the page is treated as scanned or
+# image-heavy and the VLM transcribes it instead.
+TRANSCRIPTION_MIN_CHARS = 25
+
 class ConversionError(Exception):
     """Error raised during PDF conversion process."""
     pass
@@ -86,20 +91,24 @@ def parse_page_selection(selection_string: Optional[str], total_pages: int) -> L
         logger.error(f"Error parsing page selection '{selection_string}': {e}. Processing all pages.")
         return list(range(total_pages))
 
-def format_markdown_output(descriptions: List[str], original_filename: str, page_numbers: Optional[List[int]] = None) -> str:
+def format_markdown_output(descriptions: List[str], original_filename: str, page_numbers: Optional[List[int]] = None, document_summary: Optional[str] = None) -> str:
     """
-    Combine page descriptions into a single Markdown file.
+    Combine page content into a single Markdown file.
 
     Args:
-        descriptions: List of strings, each being a description of a page
+        descriptions: List of strings, each being the content of a page
         original_filename: Name of the original PDF file
         page_numbers: List of actual page numbers corresponding to descriptions (1-based)
+        document_summary: Optional document summary to include before the pages
 
     Returns:
         str: Complete Markdown content
     """
     md_content = f"# Description of PDF: {original_filename}\n\n"
-    
+
+    if document_summary:
+        md_content += f"## Document Summary\n\n{document_summary}\n\n---\n\n"
+
     for i, desc in enumerate(descriptions):
         # Use actual page number if provided, otherwise use sequential numbering
         page_num = page_numbers[i] if page_numbers else (i + 1)
@@ -108,6 +117,21 @@ def format_markdown_output(descriptions: List[str], original_filename: str, page
         md_content += "\n\n---\n\n"
     
     return md_content
+
+def _call_vlm(provider: str, cfg: Dict[str, Any], prompt_text: str, image_bytes: bytes, mime_type: str) -> Optional[str]:
+    """Dispatch a VLM call for a page image to the configured provider."""
+    vlm_model = cfg.get("vlm_model")
+    if provider == "openrouter":
+        return openrouter_client.get_vlm_description(
+            cfg.get("openrouter_api_key"), vlm_model, prompt_text, image_bytes, mime_type
+        )
+    if provider == "qianfan":
+        return qianfan_client.get_vlm_description(
+            cfg.get("qianfan_api_key"), vlm_model, prompt_text, image_bytes, mime_type
+        )
+    return ollama_client.get_vlm_description(
+        cfg.get("ollama_endpoint"), vlm_model, prompt_text, image_bytes, mime_type
+    )
 
 def convert_pdf_to_markdown(
     pdf_path: str,
@@ -128,6 +152,16 @@ def convert_pdf_to_markdown(
     start_time = time.time()
     progress_callback(0.0, "Starting conversion process...")
     logger.info("Starting conversion process...")
+
+    # Validate that at least one output is requested
+    include_descriptions = cfg.get("include_descriptions", True)
+    include_transcription = cfg.get("include_transcription", False)
+    summary_in_output = cfg.get("summary_in_output", False)
+    if not (include_descriptions or include_transcription or summary_in_output):
+        msg = "Error: Nothing to generate. Enable page descriptions, direct transcription, or the document summary."
+        logger.error(msg)
+        progress_callback(0.0, msg)
+        return msg, None
 
     # Validate provider
     provider = cfg.get("provider", "openrouter").lower()
@@ -189,7 +223,7 @@ def convert_pdf_to_markdown(
         # Generate summary if needed
         pdf_summary = None
         summary_progress = 0.05
-        if cfg.get("use_summary"):
+        if cfg.get("use_summary") or summary_in_output:
             summary_model = cfg.get("summary_llm_model")
             progress_callback(summary_progress, f"Generating summary using {summary_model}...")
             try:
@@ -259,6 +293,10 @@ def convert_pdf_to_markdown(
             else:
                 logger.info(f"Processing all {total_pages} pages.")
 
+            if not (include_descriptions or include_transcription):
+                selected_indices = []
+                logger.info("No per-page content requested; skipping page processing.")
+
             pages_done = 0
             pages_start = time.time()
 
@@ -287,9 +325,10 @@ def convert_pdf_to_markdown(
                         all_descriptions.append(f"*Error: Could not render image for page {page_num}.*")
                         continue
 
-                    # Extract markdown context if needed
+                    # Extract with MarkItDown when descriptions want it as context
+                    # or when transcription can use it instead of a model call
                     markdown_context = None
-                    if cfg.get("use_markitdown"):
+                    if (include_descriptions and cfg.get("use_markitdown")) or include_transcription:
                         markitdown_progress_message = f"Page {page_num}: Extracting text (Markitdown)..."
                         progress_callback(current_progress, markitdown_progress_message)
                         
@@ -318,59 +357,89 @@ def convert_pdf_to_markdown(
                                 logger.warning(f"Could not create temporary PDF for Markitdown on page {page_num}.")
                                 progress_callback(current_progress, f"Page {page_num}: Failed to prepare for Markitdown.")
 
-                    # Select appropriate prompt
-                    prompt_key = "vlm_base"
-                    has_markdown = cfg.get("use_markitdown") and markdown_context is not None
-                    has_summary = cfg.get("use_summary") and pdf_summary is not None
-
-                    if has_markdown and has_summary:
-                        prompt_key = "vlm_full"
-                    elif has_markdown:
-                        prompt_key = "vlm_markdown"
-                    elif has_summary:
-                        prompt_key = "vlm_summary"
-
-                    vlm_prompt_template = required_prompts.get(prompt_key)
-                    if not vlm_prompt_template:
-                        error_msg = f"Missing required prompt template: {prompt_key}"
-                        progress_callback(current_progress, error_msg)
-                        logger.error(error_msg)
-                        all_descriptions.append(f"*Error: Could not generate description for page {page_num} due to missing prompt template.*")
-                        continue
-
-                    # Prepare prompt
-                    prompt_text = vlm_prompt_template.replace("[PAGE_NUM]", str(page_num))
-                    prompt_text = prompt_text.replace("[TOTAL_PAGES]", str(total_pages))
-                    prompt_text = prompt_text.replace("[LANGUAGE]", cfg.get("output_language", "English"))
-                    if "[MARKDOWN_CONTEXT]" in prompt_text:
-                        prompt_text = prompt_text.replace("[MARKDOWN_CONTEXT]", markdown_context if markdown_context else "N/A")
-                    if "[SUMMARY_CONTEXT]" in prompt_text:
-                        prompt_text = prompt_text.replace("[SUMMARY_CONTEXT]", pdf_summary if pdf_summary else "N/A")
-
-                    # Call VLM
+                    # Generate the requested content parts for this page
                     vlm_model = cfg.get("vlm_model")
-                    vlm_progress_message = f"Page {page_num}: Calling VLM ({vlm_model})..."
-                    progress_callback(current_progress, vlm_progress_message)
+                    page_parts: List[Tuple[str, str]] = []
+
                     try:
-                        if provider == "openrouter":
-                            page_description = openrouter_client.get_vlm_description(
-                                cfg.get("openrouter_api_key"), vlm_model, prompt_text, image_bytes, mime_type
+                        if include_descriptions:
+                            # Select appropriate prompt
+                            prompt_key = "vlm_base"
+                            has_markdown = cfg.get("use_markitdown") and markdown_context is not None
+                            has_summary = cfg.get("use_summary") and pdf_summary is not None
+
+                            if has_markdown and has_summary:
+                                prompt_key = "vlm_full"
+                            elif has_markdown:
+                                prompt_key = "vlm_markdown"
+                            elif has_summary:
+                                prompt_key = "vlm_summary"
+
+                            vlm_prompt_template = required_prompts.get(prompt_key)
+                            if not vlm_prompt_template:
+                                error_msg = f"Missing required prompt template: {prompt_key}"
+                                progress_callback(current_progress, error_msg)
+                                logger.error(error_msg)
+                                page_parts.append(("Description", f"*Error: missing prompt template '{prompt_key}'.*"))
+                            else:
+                                prompt_text = vlm_prompt_template.replace("[PAGE_NUM]", str(page_num))
+                                prompt_text = prompt_text.replace("[TOTAL_PAGES]", str(total_pages))
+                                prompt_text = prompt_text.replace("[LANGUAGE]", cfg.get("output_language", "English"))
+                                if "[MARKDOWN_CONTEXT]" in prompt_text:
+                                    prompt_text = prompt_text.replace("[MARKDOWN_CONTEXT]", markdown_context if markdown_context else "N/A")
+                                if "[SUMMARY_CONTEXT]" in prompt_text:
+                                    prompt_text = prompt_text.replace("[SUMMARY_CONTEXT]", pdf_summary if pdf_summary else "N/A")
+
+                                progress_callback(current_progress, f"Page {page_num}: Calling VLM ({vlm_model})...")
+                                page_description = _call_vlm(provider, cfg, prompt_text, image_bytes, mime_type)
+                                if page_description:
+                                    logger.info(f"VLM description received for page {page_num}.")
+                                else:
+                                    page_description = f"*Warning: VLM did not return a description for page {page_num}.*"
+                                    progress_callback(current_progress, f"Page {page_num}: VLM returned no description.")
+                                    logger.warning(f"VLM returned no description for page {page_num}.")
+                                page_parts.append(("Description", page_description))
+
+                        if include_transcription:
+                            # MarkItDown-first: trust local extraction when the
+                            # page has a reliable text layer; call the model
+                            # only for pages it can't confidently handle.
+                            raw_text = (page.get_text() or "").strip()
+                            mkd_text = markdown_context.strip() if markdown_context else ""
+                            mkd_confident = (
+                                len(mkd_text) >= TRANSCRIPTION_MIN_CHARS
+                                and len(mkd_text) >= 0.5 * len(raw_text)
                             )
-                        elif provider == "qianfan":
-                            page_description = qianfan_client.get_vlm_description(
-                                cfg.get("qianfan_api_key"), vlm_model, prompt_text, image_bytes, mime_type
-                            )
-                        elif provider == "ollama":
-                            page_description = ollama_client.get_vlm_description(
-                                cfg.get("ollama_endpoint"), vlm_model, prompt_text, image_bytes, mime_type
-                            )
-                        
-                        if page_description:
-                            logger.info(f"VLM description received for page {page_num}.")
-                        else:
-                            page_description = f"*Warning: VLM did not return a description for page {page_num}.*"
-                            progress_callback(current_progress, f"Page {page_num}: VLM returned no description.")
-                            logger.warning(f"VLM returned no description for page {page_num}.")
+
+                            if not raw_text and not page.get_images(full=True):
+                                logger.info(f"Page {page_num}: blank page, transcription resolved locally.")
+                                progress_callback(current_progress, f"Page {page_num}: Blank page (no model call).")
+                                page_parts.append(("Transcription", "[No text on this page]"))
+                            elif mkd_confident:
+                                logger.info(f"Page {page_num}: transcription taken from MarkItDown (no model call).")
+                                progress_callback(current_progress, f"Page {page_num}: Transcribed via MarkItDown (no model call).")
+                                page_parts.append(("Transcription", markdown_context.strip()))
+                            else:
+                                transcribe_template = required_prompts.get("vlm_transcribe")
+                                if not transcribe_template:
+                                    error_msg = "Missing required prompt template: vlm_transcribe"
+                                    progress_callback(current_progress, error_msg)
+                                    logger.error(error_msg)
+                                    page_parts.append(("Transcription", "*Error: missing prompt template 'vlm_transcribe'.*"))
+                                else:
+                                    prompt_text = transcribe_template.replace("[PAGE_NUM]", str(page_num))
+                                    prompt_text = prompt_text.replace("[TOTAL_PAGES]", str(total_pages))
+                                    prompt_text = prompt_text.replace("[LANGUAGE]", cfg.get("output_language", "English"))
+
+                                    progress_callback(current_progress, f"Page {page_num}: MarkItDown not confident, transcribing with {vlm_model}...")
+                                    page_transcription = _call_vlm(provider, cfg, prompt_text, image_bytes, mime_type)
+                                    if page_transcription:
+                                        logger.info(f"VLM transcription received for page {page_num}.")
+                                    else:
+                                        page_transcription = f"*Warning: VLM did not return a transcription for page {page_num}.*"
+                                        progress_callback(current_progress, f"Page {page_num}: VLM returned no transcription.")
+                                        logger.warning(f"VLM returned no transcription for page {page_num}.")
+                                    page_parts.append(("Transcription", page_transcription))
 
                     except (ValueError, ConnectionError, TimeoutError, ImportError) as api_err:
                         error_msg = f"API Error on page {page_num}: {api_err}. Aborting."
@@ -382,9 +451,15 @@ def convert_pdf_to_markdown(
                         error_msg = f"Unexpected error during VLM call for page {page_num}: {vlm_err}. Skipping page."
                         progress_callback(current_progress, error_msg)
                         logger.exception(error_msg)
-                        page_description = f"*Error: Failed to get VLM description for page {page_num} due to an unexpected error.*"
+                        page_parts.append(("Error", f"*Error: Failed to process page {page_num} due to an unexpected error.*"))
 
-                    all_descriptions.append(page_description if page_description else "*No description available.*")
+                    if len(page_parts) > 1:
+                        page_content = "\n\n".join(f"### {label}\n\n{text}" for label, text in page_parts)
+                    elif page_parts:
+                        page_content = page_parts[0][1]
+                    else:
+                        page_content = "*No content generated for this page.*"
+                    all_descriptions.append(page_content)
 
                     # Live average-pace monitor, shown in the progress status
                     pages_done += 1
@@ -403,11 +478,14 @@ def convert_pdf_to_markdown(
 
         # Generate final markdown
         final_progress = 0.99
-        progress_callback(final_progress, "Combining page descriptions into final Markdown...")
+        progress_callback(final_progress, "Combining content into final Markdown...")
 
         actual_page_numbers = [i + 1 for i in selected_indices] if 'selected_indices' in locals() else None
 
-        final_markdown = format_markdown_output(all_descriptions, original_filename, actual_page_numbers)
+        final_markdown = format_markdown_output(
+            all_descriptions, original_filename, actual_page_numbers,
+            document_summary=pdf_summary if summary_in_output else None
+        )
         logger.info("Final Markdown content assembled.")
 
         # Report completion
