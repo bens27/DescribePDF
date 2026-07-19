@@ -38,6 +38,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "openrouter_api_key": None,
     "or_vlm_model": "qwen/qwen2.5-vl-72b-instruct",
     "or_summary_model": "google/gemini-2.5-flash-preview",
+
+    "provider": "openrouter",
+    "qianfan_api_key": None,
     
     "ollama_endpoint": "http://localhost:11434",
     "ollama_vlm_model": "llama3.2-vision",
@@ -94,6 +97,12 @@ def load_env_config() -> Dict[str, Any]:
     if os.getenv("DEFAULT_OR_SUMMARY_MODEL"):
         loaded_config["or_summary_model"] = os.getenv("DEFAULT_OR_SUMMARY_MODEL")
         
+    if os.getenv("DESCRIBEPDF_PROVIDER"):
+        loaded_config["provider"] = str(os.getenv("DESCRIBEPDF_PROVIDER")).lower()
+
+    if os.getenv("QIANFAN_API_KEY"):
+        loaded_config["qianfan_api_key"] = os.getenv("QIANFAN_API_KEY")
+
     if os.getenv("OLLAMA_ENDPOINT"):
         loaded_config["ollama_endpoint"] = os.getenv("OLLAMA_ENDPOINT")
         
@@ -119,8 +128,9 @@ def load_env_config() -> Dict[str, Any]:
     
     # Log configuration without sensitive data
     log_config = loaded_config.copy()
-    if "openrouter_api_key" in log_config and log_config["openrouter_api_key"]:
-        log_config["openrouter_api_key"] = f"***{log_config['openrouter_api_key'][-5:]}" if len(log_config['openrouter_api_key']) > 5 else "*****"
+    for secret in ("openrouter_api_key", "qianfan_api_key"):
+        if log_config.get(secret):
+            log_config[secret] = f"***{log_config[secret][-5:]}" if len(log_config[secret]) > 5 else "*****"
     logger.debug(f"Effective configuration: {log_config}")
     
     return loaded_config

@@ -11,6 +11,7 @@ from typing import Optional
 from . import pdf_processor
 from . import openrouter_client
 from . import ollama_client
+from . import qianfan_client
 from .config import get_prompts
 
 # Get logger from config module
@@ -94,6 +95,21 @@ def generate_summary(
                 logger.error("OpenRouter LLM call for summary returned no content.")
                 return None
         
+        # Handle Baidu Qianfan provider
+        elif provider == "qianfan":
+            if not api_key:
+                logger.error("Baidu Qianfan API key is required for Qianfan provider.")
+                return None
+
+            logger.info(f"Calling Qianfan LLM for summary (model: {model})...")
+            summary = qianfan_client.get_llm_summary(api_key, model, prompt_text)
+            if summary:
+                logger.info("Summary generated successfully via Qianfan.")
+                return summary
+            else:
+                logger.error("Qianfan LLM call for summary returned no content.")
+                return None
+
         # Handle Ollama provider
         elif provider == "ollama":
             if not ollama_endpoint:

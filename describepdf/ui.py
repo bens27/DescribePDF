@@ -23,10 +23,27 @@ theme = gr.themes.Soft(
     spacing_size="lg",
 )
 
+# Provider selector labels mapped to the internal provider ids used by core
+PROVIDER_LABELS = {
+    "OpenRouter": "openrouter",
+    "Baidu Qianfan (direct)": "qianfan",
+}
+
+def _provider_from_label(label: str) -> str:
+    return PROVIDER_LABELS.get(label, "openrouter")
+
+def _label_from_provider(provider: str) -> str:
+    for label, pid in PROVIDER_LABELS.items():
+        if pid == provider:
+            return label
+    return "OpenRouter"
+
 def convert_pdf_to_descriptive_markdown(
-    pdf_file_obj: Optional[gr.File], 
-    ui_api_key: str, 
-    ui_vlm_model: str, 
+    pdf_file_obj: Optional[gr.File],
+    ui_provider: str,
+    ui_api_key: str,
+    ui_qianfan_key: str,
+    ui_vlm_model: str,
     ui_lang: str, 
     ui_use_md: bool, 
     ui_use_sum: bool, 
@@ -49,7 +66,9 @@ def convert_pdf_to_descriptive_markdown(
     
     Args:
         pdf_file_obj: Gradio File object for the uploaded PDF
+        ui_provider: Provider label from the Settings tab
         ui_api_key: OpenRouter API key from UI
+        ui_qianfan_key: Baidu Qianfan API key from UI
         ui_vlm_model: VLM model name from UI (e.g., qwen/qwen2.5-vl-72b-instruct)
         ui_lang: Output language for descriptions (e.g., English, Spanish)
         ui_use_md: Whether to use Markitdown for enhanced text extraction
@@ -77,11 +96,14 @@ def convert_pdf_to_descriptive_markdown(
     env_config = config.get_config()
 
     # Prepare configuration for this run
+    provider = _provider_from_label(ui_provider)
     api_key = ui_api_key.strip() if ui_api_key.strip() else env_config.get("openrouter_api_key")
+    qianfan_key = ui_qianfan_key.strip() if ui_qianfan_key.strip() else env_config.get("qianfan_api_key")
 
     current_run_config: Dict[str, Any] = {
-        "provider": "openrouter",
+        "provider": provider,
         "openrouter_api_key": api_key,
+        "qianfan_api_key": qianfan_key,
         "vlm_model": ui_vlm_model,
         "output_language": ui_lang,
         "use_markitdown": ui_use_md,
@@ -94,9 +116,13 @@ def convert_pdf_to_descriptive_markdown(
         ])
     }
 
-    # Validate API key
-    if not current_run_config.get("openrouter_api_key"):
-        error_msg = "Error: OpenRouter API Key is missing. Provide it in the UI or set OPENROUTER_API_KEY in the .env file."
+    # Validate the key for the selected provider
+    if provider == "openrouter" and not current_run_config.get("openrouter_api_key"):
+        error_msg = "Error: OpenRouter API Key is missing. Provide it in the Settings tab or set OPENROUTER_API_KEY in the .env file."
+        logging.error(error_msg)
+        return error_msg, gr.update(value=None, visible=False), None
+    if provider == "qianfan" and not current_run_config.get("qianfan_api_key"):
+        error_msg = "Error: Baidu Qianfan API Key is missing. Provide it in the Settings tab or set QIANFAN_API_KEY in the .env file."
         logging.error(error_msg)
         return error_msg, gr.update(value=None, visible=False), None
 
@@ -153,7 +179,9 @@ def convert_pdf_to_descriptive_markdown(
     )
 
 def save_settings(
+    ui_provider: str,
     ui_api_key: str,
+    ui_qianfan_key: str,
     ui_vlm_model: str,
     ui_lang: str,
     ui_use_md: bool,
@@ -164,10 +192,11 @@ def save_settings(
     """
     Persist the Settings tab values as defaults for future sessions.
 
-    The API key is only saved when the field is non-empty; leaving it blank
+    API keys are only saved when their field is non-empty; leaving one blank
     keeps whatever key is already stored.
     """
     values = {
+        "DESCRIBEPDF_PROVIDER": _provider_from_label(ui_provider),
         "DEFAULT_OR_VLM_MODEL": ui_vlm_model,
         "DEFAULT_OR_SUMMARY_MODEL": ui_sum_model,
         "DEFAULT_LANGUAGE": ui_lang,
@@ -175,10 +204,13 @@ def save_settings(
         "DEFAULT_USE_SUMMARY": str(bool(ui_use_sum)).lower(),
         "DEFAULT_PAGE_SELECTION": ui_page_selection.strip()
     }
-    key_note = " API key left blank, so the stored key (if any) is unchanged."
+    key_note = " API key fields left blank keep their stored keys (if any)."
     if ui_api_key and ui_api_key.strip():
         values["OPENROUTER_API_KEY"] = ui_api_key.strip()
-        key_note = " API key saved."
+    if ui_qianfan_key and ui_qianfan_key.strip():
+        values["QIANFAN_API_KEY"] = ui_qianfan_key.strip()
+    if "OPENROUTER_API_KEY" in values or "QIANFAN_API_KEY" in values:
+        key_note = " Provided API key(s) saved."
     config.save_user_settings(values)
     return f"✅ Settings saved to `{config.USER_ENV_FILE}`.{key_note}"
 
@@ -186,6 +218,8 @@ def reset_settings() -> list:
     """Clear saved settings and repopulate the fields with the defaults."""
     cfg = config.reset_user_settings()
     return [
+        gr.update(value=_label_from_provider(cfg.get("provider", "openrouter"))),
+        gr.update(value=""),
         gr.update(value=""),
         gr.update(value=cfg.get("or_vlm_model")),
         gr.update(value=cfg.get("output_language")),
@@ -212,7 +246,9 @@ def convert_folder_to_descriptive_markdowns(
     ui_overwrite: bool,
     ui_recursive: bool,
     ui_preserve_structure: bool,
+    ui_provider: str,
     ui_api_key: str,
+    ui_qianfan_key: str,
     ui_vlm_model: str,
     ui_lang: str,
     ui_use_md: bool,
@@ -239,7 +275,9 @@ def convert_folder_to_descriptive_markdowns(
         ui_overwrite: Whether to re-convert files whose .md already exists
         ui_recursive: Also convert PDFs in subfolders (all levels)
         ui_preserve_structure: Mirror the subfolder layout in the destination
+        ui_provider: Provider label from the Settings tab
         ui_api_key: OpenRouter API key from UI
+        ui_qianfan_key: Baidu Qianfan API key from UI
         ui_vlm_model: VLM model name from UI
         ui_lang: Output language for descriptions
         ui_use_md: Whether to use Markitdown for enhanced text extraction
@@ -261,11 +299,14 @@ def convert_folder_to_descriptive_markdowns(
 
     # Load environment config
     env_config = config.get_config()
+    provider = _provider_from_label(ui_provider)
     api_key = ui_api_key.strip() if ui_api_key.strip() else env_config.get("openrouter_api_key")
+    qianfan_key = ui_qianfan_key.strip() if ui_qianfan_key.strip() else env_config.get("qianfan_api_key")
 
     current_run_config: Dict[str, Any] = {
-        "provider": "openrouter",
+        "provider": provider,
         "openrouter_api_key": api_key,
+        "qianfan_api_key": qianfan_key,
         "vlm_model": ui_vlm_model,
         "output_language": ui_lang,
         "use_markitdown": ui_use_md,
@@ -278,8 +319,12 @@ def convert_folder_to_descriptive_markdowns(
         ])
     }
 
-    if not current_run_config.get("openrouter_api_key"):
+    if provider == "openrouter" and not current_run_config.get("openrouter_api_key"):
         error_msg = "Error: OpenRouter API Key is missing. Provide it in the Settings tab or set OPENROUTER_API_KEY in the .env file."
+        logging.error(error_msg)
+        return error_msg, ""
+    if provider == "qianfan" and not current_run_config.get("qianfan_api_key"):
+        error_msg = "Error: Baidu Qianfan API Key is missing. Provide it in the Settings tab or set QIANFAN_API_KEY in the .env file."
         logging.error(error_msg)
         return error_msg, ""
 
@@ -438,18 +483,30 @@ def create_ui() -> gr.Blocks:
                     "Adjust settings for the *next* generation. Use **Save as My Defaults** below "
                     "to keep them across restarts."
                 )
+                provider_input = gr.Radio(
+                    label="Provider",
+                    choices=list(PROVIDER_LABELS.keys()),
+                    value=_label_from_provider(initial_env_config.get("provider", "openrouter")),
+                    info="Where to send the model calls. Baidu Qianfan (direct) uses your Baidu account for models not on OpenRouter (e.g. qianfan-ocr-fast)."
+                )
                 api_key_input = gr.Textbox(
                     label="OpenRouter API Key" + (" (set in .env)" if has_env_api_key else ""),
                     type="password",
                     placeholder="Enter an API key here to override the one in .env" if has_env_api_key else "Enter your OpenRouter API key",
-                    value="" 
+                    value=""
+                )
+                qianfan_key_input = gr.Textbox(
+                    label="Baidu Qianfan API Key" + (" (set in .env)" if initial_env_config.get("qianfan_api_key") else ""),
+                    type="password",
+                    placeholder="Enter your Baidu Qianfan API key (only needed for the Baidu Qianfan provider)",
+                    value=""
                 )
                 vlm_model_input = gr.Dropdown(
-                    label="VLM Model", 
+                    label="VLM Model",
                     choices=suggested_vlms,
                     value=initial_vlm,
                     allow_custom_value=True,
-                    info="Select or type the OpenRouter VLM model name"
+                    info="Select or type the model name for the chosen provider (OpenRouter slug, or a Qianfan model like qianfan-ocr-fast)"
                 )
                 output_language_input = gr.Dropdown(
                     label="Output Language", 
@@ -491,7 +548,7 @@ def create_ui() -> gr.Blocks:
 
         # Connect UI components
         conversion_inputs = [
-            pdf_input, api_key_input, vlm_model_input, output_language_input,
+            pdf_input, provider_input, api_key_input, qianfan_key_input, vlm_model_input, output_language_input,
             use_markitdown_checkbox, use_summary_checkbox, summary_llm_model_input, page_selection_input
         ] + prompt_editors
         conversion_outputs = [
@@ -509,8 +566,8 @@ def create_ui() -> gr.Blocks:
         save_settings_button.click(
             fn=save_settings,
             inputs=[
-                api_key_input, vlm_model_input, output_language_input,
-                use_markitdown_checkbox, use_summary_checkbox,
+                provider_input, api_key_input, qianfan_key_input, vlm_model_input,
+                output_language_input, use_markitdown_checkbox, use_summary_checkbox,
                 summary_llm_model_input, page_selection_input
             ],
             outputs=[settings_status]
@@ -519,8 +576,8 @@ def create_ui() -> gr.Blocks:
             fn=reset_settings,
             inputs=[],
             outputs=[
-                api_key_input, vlm_model_input, output_language_input,
-                page_selection_input, use_markitdown_checkbox,
+                provider_input, api_key_input, qianfan_key_input, vlm_model_input,
+                output_language_input, page_selection_input, use_markitdown_checkbox,
                 use_summary_checkbox, summary_llm_model_input, settings_status
             ]
         )
@@ -530,7 +587,7 @@ def create_ui() -> gr.Blocks:
             inputs=[
                 batch_folder_input, batch_export_input, batch_overwrite_checkbox,
                 batch_recursive_checkbox, batch_structure_checkbox,
-                api_key_input, vlm_model_input, output_language_input,
+                provider_input, api_key_input, qianfan_key_input, vlm_model_input, output_language_input,
                 use_markitdown_checkbox, use_summary_checkbox, summary_llm_model_input,
                 page_selection_input
             ] + prompt_editors,

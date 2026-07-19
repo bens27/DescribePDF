@@ -17,6 +17,7 @@ from . import markitdown_processor
 from . import summarizer
 from . import openrouter_client
 from . import ollama_client
+from . import qianfan_client
 
 # Get logger from config module
 logger = logging.getLogger('describepdf')
@@ -139,6 +140,12 @@ def convert_pdf_to_markdown(
             logger.error(msg)
             progress_callback(0.0, msg)
             return msg, None
+    elif provider == "qianfan":
+        if not cfg.get("qianfan_api_key"):
+            msg = "Error: Baidu Qianfan API Key is missing."
+            logger.error(msg)
+            progress_callback(0.0, msg)
+            return msg, None
     elif provider == "ollama":
         ollama_endpoint = cfg.get("ollama_endpoint", "http://localhost:11434")
         if not ollama_client.OLLAMA_AVAILABLE:
@@ -153,7 +160,7 @@ def convert_pdf_to_markdown(
             progress_callback(0.0, msg)
             return msg, None
     else:
-        msg = f"Error: Unknown provider '{provider}'. Use 'openrouter' or 'ollama'."
+        msg = f"Error: Unknown provider '{provider}'. Use 'openrouter', 'qianfan' or 'ollama'."
         logger.error(msg)
         progress_callback(0.0, msg)
         return msg, None
@@ -186,10 +193,11 @@ def convert_pdf_to_markdown(
             summary_model = cfg.get("summary_llm_model")
             progress_callback(summary_progress, f"Generating summary using {summary_model}...")
             try:
+                summary_api_key = cfg.get("qianfan_api_key") if provider == "qianfan" else cfg.get("openrouter_api_key")
                 pdf_summary = summarizer.generate_summary(
                     pdf_path,
                     provider=provider,
-                    api_key=cfg.get("openrouter_api_key"),
+                    api_key=summary_api_key,
                     ollama_endpoint=cfg.get("ollama_endpoint"),
                     model=summary_model,
                     prompt_template=required_prompts.get("summary")
@@ -347,6 +355,10 @@ def convert_pdf_to_markdown(
                         if provider == "openrouter":
                             page_description = openrouter_client.get_vlm_description(
                                 cfg.get("openrouter_api_key"), vlm_model, prompt_text, image_bytes, mime_type
+                            )
+                        elif provider == "qianfan":
+                            page_description = qianfan_client.get_vlm_description(
+                                cfg.get("qianfan_api_key"), vlm_model, prompt_text, image_bytes, mime_type
                             )
                         elif provider == "ollama":
                             page_description = ollama_client.get_vlm_description(
