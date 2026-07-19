@@ -5,6 +5,7 @@ This module contains the main orchestration logic for converting PDFs to Markdow
 """
 
 import os
+import pathlib
 import time
 from typing import Dict, Any, Callable, Tuple, List, Optional
 import contextlib
@@ -186,11 +187,12 @@ def convert_pdf_to_markdown(
             progress_callback(summary_progress, f"Generating summary using {summary_model}...")
             try:
                 pdf_summary = summarizer.generate_summary(
-                    pdf_path, 
-                    provider=provider, 
-                    api_key=cfg.get("openrouter_api_key"), 
-                    ollama_endpoint=cfg.get("ollama_endpoint"), 
-                    model=summary_model
+                    pdf_path,
+                    provider=provider,
+                    api_key=cfg.get("openrouter_api_key"),
+                    ollama_endpoint=cfg.get("ollama_endpoint"),
+                    model=summary_model,
+                    prompt_template=required_prompts.get("summary")
                 )
                 
                 if pdf_summary:
@@ -404,3 +406,100 @@ def convert_pdf_to_markdown(
         progress_callback(0.0, error_msg)
         logger.exception(error_msg)
         return error_msg, None
+
+def convert_folder_to_markdown(
+    input_dir: str,
+    output_dir: str,
+    cfg: Dict[str, Any],
+    progress_callback: Callable[[float, str], None],
+    overwrite: bool = False
+) -> Tuple[str, List[Tuple[str, str]]]:
+    """
+    Convert every PDF in a folder to a Markdown description file.
+
+    Each `<name>.pdf` in input_dir (top level only) produces `<name>.md` in
+    output_dir — filenames are preserved apart from the extension.
+
+    Args:
+        input_dir: Folder containing the PDF files to convert
+        output_dir: Folder where the .md files are written (created if missing)
+        cfg: Configuration dictionary applied to every file
+        progress_callback: Function accepting (float_progress, string_status)
+        overwrite: Whether to re-convert files whose .md already exists
+
+    Returns:
+        tuple: (summary_message, list of (filename, outcome) pairs)
+    """
+    input_path = pathlib.Path(os.path.expanduser(input_dir.strip())) if input_dir else None
+    if not input_path or not input_path.is_dir():
+        msg = f"Error: Input folder not found: {input_dir}"
+        logger.error(msg)
+        progress_callback(0.0, msg)
+        return msg, []
+
+    output_path = pathlib.Path(os.path.expanduser(output_dir.strip())) if output_dir else None
+    if not output_path:
+        msg = "Error: No export destination folder given."
+        logger.error(msg)
+        progress_callback(0.0, msg)
+        return msg, []
+
+    pdf_files = sorted(
+        (p for p in input_path.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"),
+        key=lambda p: p.name.lower()
+    )
+    if not pdf_files:
+        msg = f"No PDF files found in {input_path}."
+        logger.warning(msg)
+        progress_callback(0.0, msg)
+        return msg, []
+
+    try:
+        output_path.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        msg = f"Error: Could not create export folder {output_path}: {e}"
+        logger.error(msg)
+        progress_callback(0.0, msg)
+        return msg, []
+
+    logger.info(f"Batch conversion: {len(pdf_files)} PDF(s) from '{input_path}' to '{output_path}'.")
+
+    results: List[Tuple[str, str]] = []
+    converted = skipped = failed = 0
+    total = len(pdf_files)
+
+    for index, pdf_file in enumerate(pdf_files):
+        output_file = output_path / (pdf_file.stem + ".md")
+
+        if output_file.exists() and not overwrite:
+            logger.info(f"Skipping '{pdf_file.name}': '{output_file.name}' already exists.")
+            results.append((pdf_file.name, "skipped (output exists)"))
+            skipped += 1
+            continue
+
+        def file_progress(progress_value: float, status: str, index: int = index, name: str = pdf_file.name) -> None:
+            clamped = max(0.0, min(1.0, progress_value))
+            progress_callback((index + clamped) / total, f"[{index + 1}/{total}] {name}: {status}")
+
+        # Each file gets its own copy: convert_pdf_to_markdown may mutate the
+        # config (e.g. disabling use_summary after a failure).
+        status, markdown = convert_pdf_to_markdown(str(pdf_file), dict(cfg), file_progress)
+
+        if markdown:
+            try:
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    f.write(markdown)
+                results.append((pdf_file.name, f"converted -> {output_file.name}"))
+                converted += 1
+            except Exception as e:
+                logger.error(f"Error writing '{output_file}': {e}")
+                results.append((pdf_file.name, f"failed to write output: {e}"))
+                failed += 1
+        else:
+            results.append((pdf_file.name, f"failed: {status}"))
+            failed += 1
+
+    summary = f"Batch finished: {converted} converted, {skipped} skipped, {failed} failed (of {total})."
+    progress_callback(1.0, summary)
+    logger.info(summary)
+    return summary, results

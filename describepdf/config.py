@@ -18,6 +18,15 @@ logger = logging.getLogger('describepdf')
 SCRIPT_DIR = pathlib.Path(__file__).parent.parent.absolute()
 PROMPTS_DIR = pathlib.Path(SCRIPT_DIR) / "prompts"
 
+# Directory for user-saved prompt overrides. The factory prompts in PROMPTS_DIR
+# are never modified; user files shadow them template-by-template.
+USER_DIR = pathlib.Path(os.getenv("DESCRIBEPDF_USER_DIR", str(pathlib.Path.home() / ".describepdf")))
+USER_PROMPTS_DIR = USER_DIR / "prompts"
+
+# Free-form user notes kept alongside the prompt overrides but independent of
+# them: restoring or reloading prompt defaults never touches this file.
+FUTURE_IDEAS_FILE = USER_DIR / "future_ideas.md"
+
 # Default configuration values
 
 # Default configuration values
@@ -50,6 +59,9 @@ _CONFIG_CACHE: Optional[Dict[str, Any]] = None
 
 # Cache for loaded prompts
 _PROMPTS_CACHE: Optional[Dict[str, str]] = None
+
+# Cache for factory (shipped) prompts
+_FACTORY_PROMPTS_CACHE: Optional[Dict[str, str]] = None
 
 def load_env_config() -> Dict[str, Any]:
     """
@@ -107,34 +119,159 @@ def load_env_config() -> Dict[str, Any]:
     
     return loaded_config
 
-def load_prompt_templates() -> Dict[str, str]:
+def _load_prompts_from_dir(directory: pathlib.Path) -> Dict[str, str]:
     """
-    Load prompt templates from the prompts directory.
-    
-    This function reads template files from the prompts directory specified by
-    PROMPTS_DIR and maps them to their corresponding keys in the PROMPT_FILES dictionary.
-    
+    Load prompt templates found in a directory.
+
+    Args:
+        directory: Directory to read template files from
+
     Returns:
-        Dict[str, str]: Dictionary with loaded prompt templates
+        Dict[str, str]: Templates found in the directory, keyed per PROMPT_FILES
     """
     templates: Dict[str, str] = {}
-    
-    if not PROMPTS_DIR.is_dir():
-        logger.error(f"Prompts directory '{PROMPTS_DIR}' not found.")
+
+    if not directory.is_dir():
         return templates
 
     for key, filename in PROMPT_FILES.items():
-        filepath = PROMPTS_DIR / filename
+        filepath = directory / filename
+        if not filepath.is_file():
+            continue
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 templates[key] = f.read()
-        except FileNotFoundError:
-            logger.error(f"Prompt file not found: {filepath}")
         except Exception as e:
             logger.error(f"Error reading prompt file {filepath}: {e}")
-    
+
+    return templates
+
+def load_prompt_templates() -> Dict[str, str]:
+    """
+    Load the effective prompt templates.
+
+    Factory templates from PROMPTS_DIR are loaded first, then any user-saved
+    overrides in USER_PROMPTS_DIR shadow them template-by-template. The factory
+    files themselves are never modified, so defaults can always be restored.
+
+    Returns:
+        Dict[str, str]: Dictionary with loaded prompt templates
+    """
+    if not PROMPTS_DIR.is_dir():
+        logger.error(f"Prompts directory '{PROMPTS_DIR}' not found.")
+
+    templates = _load_prompts_from_dir(PROMPTS_DIR)
+    overrides = _load_prompts_from_dir(USER_PROMPTS_DIR)
+
+    if overrides:
+        logger.info(f"Applying {len(overrides)} user prompt override(s) from '{USER_PROMPTS_DIR}'.")
+        templates.update(overrides)
+
     logger.info(f"Loaded {len(templates)} prompt templates.")
     return templates
+
+def get_factory_prompts() -> Dict[str, str]:
+    """
+    Get the factory (shipped) prompt templates, ignoring any user overrides.
+
+    Returns:
+        Dict[str, str]: Dictionary with the original prompt templates
+    """
+    global _FACTORY_PROMPTS_CACHE
+
+    if _FACTORY_PROMPTS_CACHE is None:
+        _FACTORY_PROMPTS_CACHE = _load_prompts_from_dir(PROMPTS_DIR)
+
+    return dict(_FACTORY_PROMPTS_CACHE)
+
+def reload_prompts() -> Dict[str, str]:
+    """
+    Force reload of the effective prompt templates from disk.
+
+    Returns:
+        Dict[str, str]: Updated prompt templates
+    """
+    global _PROMPTS_CACHE
+    _PROMPTS_CACHE = load_prompt_templates()
+    return dict(_PROMPTS_CACHE)
+
+def save_user_prompts(new_prompts: Dict[str, str]) -> Dict[str, str]:
+    """
+    Persist prompt templates as the user's new defaults.
+
+    Templates identical to the factory version (or blank) have their override
+    removed instead of being written, so the user directory only ever contains
+    real customizations and the factory defaults are never lost.
+
+    Args:
+        new_prompts: Mapping of template keys to their new default text
+
+    Returns:
+        Dict[str, str]: The effective prompt templates after saving
+    """
+    factory = get_factory_prompts()
+    USER_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    for key, text in new_prompts.items():
+        if key not in PROMPT_FILES:
+            logger.warning(f"Ignoring unknown prompt template key: {key}")
+            continue
+
+        override_path = USER_PROMPTS_DIR / PROMPT_FILES[key]
+        if text is None or not text.strip() or text == factory.get(key):
+            if override_path.exists():
+                override_path.unlink()
+                logger.info(f"Removed prompt override for '{key}' (back to factory default).")
+        else:
+            with open(override_path, 'w', encoding='utf-8') as f:
+                f.write(text)
+            logger.info(f"Saved prompt override for '{key}' to '{override_path}'.")
+
+    return reload_prompts()
+
+def reset_user_prompts() -> Dict[str, str]:
+    """
+    Remove all user prompt overrides, restoring the factory defaults.
+
+    Returns:
+        Dict[str, str]: The effective prompt templates after the reset
+    """
+    for filename in PROMPT_FILES.values():
+        override_path = USER_PROMPTS_DIR / filename
+        if override_path.exists():
+            override_path.unlink()
+
+    logger.info("All user prompt overrides removed; factory defaults restored.")
+    return reload_prompts()
+
+def load_future_ideas() -> str:
+    """
+    Load the user's saved "Future Ideas" notes.
+
+    Returns:
+        str: The saved notes, or an empty string if none exist
+    """
+    try:
+        if FUTURE_IDEAS_FILE.is_file():
+            with open(FUTURE_IDEAS_FILE, 'r', encoding='utf-8') as f:
+                return f.read()
+    except Exception as e:
+        logger.error(f"Error reading future ideas file {FUTURE_IDEAS_FILE}: {e}")
+    return ""
+
+def save_future_ideas(text: str) -> None:
+    """
+    Persist the user's "Future Ideas" notes.
+
+    Args:
+        text: The notes to save
+    """
+    try:
+        USER_DIR.mkdir(parents=True, exist_ok=True)
+        with open(FUTURE_IDEAS_FILE, 'w', encoding='utf-8') as f:
+            f.write(text if text else "")
+    except Exception as e:
+        logger.error(f"Error saving future ideas file {FUTURE_IDEAS_FILE}: {e}")
 
 def get_config() -> Dict[str, Any]:
     """
@@ -196,7 +333,15 @@ def get_required_prompts_for_config(cfg: Dict[str, Any]) -> Dict[str, str]:
     Returns:
         Dict[str, str]: Dictionary with required prompt templates
     """
-    prompts = get_prompts()
+    prompts = dict(get_prompts())
+
+    # Per-run overrides (e.g. edited in the UI) shadow the saved defaults for
+    # this conversion only; blank entries fall back to the defaults.
+    custom_prompts = cfg.get("custom_prompts") or {}
+    for key, text in custom_prompts.items():
+        if key in PROMPT_FILES and isinstance(text, str) and text.strip():
+            prompts[key] = text
+
     required_keys: List[str] = ["vlm_base"]
     
     has_markdown = cfg.get("use_markitdown", False)

@@ -15,6 +15,7 @@ from typing import Tuple, Optional, Dict, Any, List
 from . import config
 from . import core
 from . import ollama_client
+from . import ui_prompts
 
 theme = gr.themes.Soft(
     primary_hue="red",
@@ -29,8 +30,13 @@ def convert_pdf_to_descriptive_markdown(
     ui_lang: str, 
     ui_use_md: bool, 
     ui_use_sum: bool, 
-    ui_sum_model: str, 
+    ui_sum_model: str,
     ui_page_selection: str,
+    ui_prompt_vlm_base: str,
+    ui_prompt_vlm_markdown: str,
+    ui_prompt_vlm_summary: str,
+    ui_prompt_vlm_full: str,
+    ui_prompt_summary: str,
     progress: gr.Progress = gr.Progress(track_tqdm=True)
 ) -> Tuple[str, gr.update, Optional[str]]:
     """
@@ -54,6 +60,11 @@ def convert_pdf_to_descriptive_markdown(
         ui_use_sum: Whether to generate a document summary for context
         ui_sum_model: Summary model name from UI (e.g., qwen2.5)
         ui_page_selection: Optional page selection string (e.g., "1,3,5-10")
+        ui_prompt_vlm_base: Per-run override for the base VLM prompt template
+        ui_prompt_vlm_markdown: Per-run override for the VLM + Markitdown prompt template
+        ui_prompt_vlm_summary: Per-run override for the VLM + summary prompt template
+        ui_prompt_vlm_full: Per-run override for the VLM + Markitdown + summary prompt template
+        ui_prompt_summary: Per-run override for the document summary prompt template
         progress: Gradio progress tracker
         
     Returns:
@@ -81,7 +92,11 @@ def convert_pdf_to_descriptive_markdown(
         "use_markitdown": ui_use_md,
         "use_summary": ui_use_sum,
         "summary_llm_model": ui_sum_model,
-        "page_selection": ui_page_selection.strip() if ui_page_selection.strip() else None
+        "page_selection": ui_page_selection.strip() if ui_page_selection.strip() else None,
+        "custom_prompts": ui_prompts.get_custom_prompts([
+            ui_prompt_vlm_base, ui_prompt_vlm_markdown, ui_prompt_vlm_summary,
+            ui_prompt_vlm_full, ui_prompt_summary
+        ])
     }
 
     # Create progress callback for Gradio
@@ -135,6 +150,92 @@ def convert_pdf_to_descriptive_markdown(
         download_button_update,
         result_markdown if result_markdown else ""
     )
+
+def convert_folder_to_descriptive_markdowns(
+    ui_folder_path: str,
+    ui_export_path: str,
+    ui_overwrite: bool,
+    ollama_endpoint: str,
+    ui_vlm_model: str,
+    ui_lang: str,
+    ui_use_md: bool,
+    ui_use_sum: bool,
+    ui_sum_model: str,
+    ui_page_selection: str,
+    ui_prompt_vlm_base: str,
+    ui_prompt_vlm_markdown: str,
+    ui_prompt_vlm_summary: str,
+    ui_prompt_vlm_full: str,
+    ui_prompt_summary: str,
+    progress: gr.Progress = gr.Progress(track_tqdm=True)
+) -> Tuple[str, str]:
+    """
+    Convert every PDF in a folder to Markdown description files using local Ollama models.
+
+    Each PDF produces a .md file with the same name in the chosen export
+    folder. Settings and prompt templates from the other tabs apply to every
+    file in the batch.
+
+    Args:
+        ui_folder_path: Folder containing the PDFs to convert
+        ui_export_path: Folder where the .md files are written
+        ui_overwrite: Whether to re-convert files whose .md already exists
+        ollama_endpoint: Ollama server endpoint URL
+        ui_vlm_model: VLM model name from UI
+        ui_lang: Output language for descriptions
+        ui_use_md: Whether to use Markitdown for enhanced text extraction
+        ui_use_sum: Whether to generate a document summary for context
+        ui_sum_model: Summary model name from UI
+        ui_page_selection: Optional page selection string applied to every file
+        ui_prompt_*: Per-run prompt template overrides
+        progress: Gradio progress tracker
+
+    Returns:
+        Tuple containing:
+        - str: Status message
+        - str: Markdown report of per-file outcomes
+    """
+    if not ui_folder_path or not ui_folder_path.strip():
+        return "Please enter the folder containing your PDF files.", ""
+    if not ui_export_path or not ui_export_path.strip():
+        return "Please enter an export destination folder.", ""
+
+    # Check Ollama availability
+    if not ollama_client.check_ollama_availability(ollama_endpoint):
+        error_msg = f"Error: Could not connect to Ollama at {ollama_endpoint}. Make sure it is running."
+        logging.error(error_msg)
+        return error_msg, ""
+
+    current_run_config: Dict[str, Any] = {
+        "provider": "ollama",
+        "ollama_endpoint": ollama_endpoint,
+        "vlm_model": ui_vlm_model,
+        "output_language": ui_lang,
+        "use_markitdown": ui_use_md,
+        "use_summary": ui_use_sum,
+        "summary_llm_model": ui_sum_model,
+        "page_selection": ui_page_selection.strip() if ui_page_selection.strip() else None,
+        "custom_prompts": ui_prompts.get_custom_prompts([
+            ui_prompt_vlm_base, ui_prompt_vlm_markdown, ui_prompt_vlm_summary,
+            ui_prompt_vlm_full, ui_prompt_summary
+        ])
+    }
+
+    def progress_callback_gradio(progress_value: float, status: str) -> None:
+        clamped_progress = max(0.0, min(1.0, progress_value))
+        progress(clamped_progress, desc=status)
+        logging.info(f"Progress: {status} ({clamped_progress*100:.1f}%)")
+
+    summary, results = core.convert_folder_to_markdown(
+        ui_folder_path,
+        ui_export_path,
+        current_run_config,
+        progress_callback_gradio,
+        overwrite=ui_overwrite
+    )
+
+    report = "\n".join(f"- **{name}**: {outcome}" for name, outcome in results)
+    return summary, report
 
 def create_ui() -> gr.Blocks:
     """
@@ -210,6 +311,36 @@ def create_ui() -> gr.Blocks:
                         markdown_output = gr.Markdown(label="Result (Markdown)")
 
             # Configuration tab
+            # Batch conversion tab
+            with gr.TabItem("Batch", id=3):
+                gr.Markdown(
+                    "Convert every PDF in a folder. Each `name.pdf` produces `name.md` in the "
+                    "export folder — filenames are kept unchanged. Settings and prompt templates "
+                    "from the other tabs apply to the whole batch."
+                )
+                batch_folder_input = gr.Textbox(
+                    label="PDF Folder",
+                    placeholder="/path/to/folder/with/pdfs",
+                    info="Folder containing the PDF files to convert (top level only)"
+                )
+                batch_export_input = gr.Textbox(
+                    label="Export Destination",
+                    placeholder="/path/to/output/folder",
+                    info="Folder where the .md files are written (created if missing)"
+                )
+                batch_overwrite_checkbox = gr.Checkbox(
+                    label="Overwrite existing .md files",
+                    value=False,
+                    info="When unchecked, PDFs whose .md already exists in the destination are skipped"
+                )
+                batch_button = gr.Button("Describe Folder", variant="primary")
+                batch_progress_output = gr.Textbox(
+                    label="Progress",
+                    interactive=False,
+                    lines=2
+                )
+                batch_results_output = gr.Markdown(label="Results")
+
             with gr.TabItem("Settings", id=1):
                 gr.Markdown(
                     "Adjust settings for the *next* generation. These settings are **not** saved. "
@@ -257,11 +388,16 @@ def create_ui() -> gr.Blocks:
                     allow_custom_value=True,
                     info="Select or type the Ollama LLM model name for summaries"
                 )
+
+            # Prompt templates tab
+            with gr.TabItem("Prompts", id=2):
+                prompt_editors = ui_prompts.build_prompts_tab()
+
         # Connect UI components
         conversion_inputs = [
             pdf_input, ollama_endpoint_input, vlm_model_input, output_language_input,
             use_markitdown_checkbox, use_summary_checkbox, summary_llm_model_input, page_selection_input
-        ]
+        ] + prompt_editors
         conversion_outputs = [
             progress_output, download_button, markdown_output
         ]
@@ -269,6 +405,17 @@ def create_ui() -> gr.Blocks:
             fn=convert_pdf_to_descriptive_markdown,
             inputs=conversion_inputs,
             outputs=conversion_outputs
+        )
+
+        batch_button.click(
+            fn=convert_folder_to_descriptive_markdowns,
+            inputs=[
+                batch_folder_input, batch_export_input, batch_overwrite_checkbox,
+                ollama_endpoint_input, vlm_model_input, output_language_input,
+                use_markitdown_checkbox, use_summary_checkbox, summary_llm_model_input,
+                page_selection_input
+            ] + prompt_editors,
+            outputs=[batch_progress_output, batch_results_output]
         )
 
     return iface

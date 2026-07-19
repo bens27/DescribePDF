@@ -151,11 +151,12 @@ class TestCore:
                 # Assert results
                 assert result is None  # Test fails at PDF loading
                 core.summarizer.generate_summary.assert_called_once_with(
-                    "test.pdf", 
-                    provider="openrouter", 
-                    api_key="test_key", 
-                    ollama_endpoint=None, 
-                    model="test_model"
+                    "test.pdf",
+                    provider="openrouter",
+                    api_key="test_key",
+                    ollama_endpoint=None,
+                    model="test_model",
+                    prompt_template="Summary prompt"
                 )
 
     def test_convert_pdf_to_markdown_summary_generation_failure(self):

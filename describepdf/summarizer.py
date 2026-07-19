@@ -24,7 +24,8 @@ def generate_summary(
     provider: str = "openrouter",
     api_key: Optional[str] = None,
     ollama_endpoint: Optional[str] = None,
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    prompt_template: Optional[str] = None
 ) -> Optional[str]:
     """
     Generate a summary of the complete textual content of a PDF using specified provider.
@@ -35,6 +36,7 @@ def generate_summary(
         api_key: OpenRouter API key (required for openrouter provider)
         ollama_endpoint: Ollama endpoint URL (required for ollama provider)
         model: LLM model to use for the summary
+        prompt_template: Optional prompt template overriding the configured one
 
     Returns:
         str: The generated summary, or None if any step fails
@@ -57,8 +59,10 @@ def generate_summary(
     logger.info(f"Text extracted ({len(full_text)} characters). Preparing summary prompt...")
 
     # Load and prepare prompt
-    prompts = get_prompts()
-    summary_prompt_template = prompts.get("summary")
+    summary_prompt_template = prompt_template
+    if not summary_prompt_template:
+        prompts = get_prompts()
+        summary_prompt_template = prompts.get("summary")
     if not summary_prompt_template:
         logger.error("Summary prompt template not found.")
         return None

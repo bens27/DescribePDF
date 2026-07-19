@@ -3,3 +3,7 @@
 /describepdf/__pycache__
 /describepdf.egg-info
 /tests/__pycache__
+/build
+/dist
+/.venv-build
+__pycache__/

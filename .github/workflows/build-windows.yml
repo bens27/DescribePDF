@@ -1,0 +1,65 @@
+name: Build Windows app
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build with PyInstaller
+        run: python -m PyInstaller packaging/DescribePDF-win.spec --noconfirm
+
+      - name: Smoke test the built app
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath "dist\DescribePDF\DescribePDF.exe" -PassThru `
+            -RedirectStandardOutput app.log -RedirectStandardError app-err.log
+          $ok = $false
+          foreach ($i in 1..45) {
+            Start-Sleep -Seconds 2
+            try {
+              $resp = Invoke-WebRequest -Uri "http://127.0.0.1:7860/" -UseBasicParsing -TimeoutSec 3
+              if ($resp.StatusCode -eq 200) { $ok = $true; break }
+            } catch {}
+            if ($proc.HasExited) { break }
+          }
+          $tabs = ""
+          if ($ok) {
+            try {
+              $config = Invoke-WebRequest -Uri "http://127.0.0.1:7860/config" -UseBasicParsing -TimeoutSec 5
+              $tabs = ($config.Content | ConvertFrom-Json).components |
+                Where-Object { $_.type -eq "tabitem" } | ForEach-Object { $_.props.label }
+            } catch {}
+          }
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          Get-Content app.log, app-err.log -ErrorAction SilentlyContinue
+          if (-not $ok) {
+            Write-Error "App did not serve the UI on port 7860."
+            exit 1
+          }
+          Write-Output "UI served. Tabs: $tabs"
+          if ($tabs -notcontains "Prompts" -or $tabs -notcontains "Batch") {
+            Write-Error "Expected tabs missing from UI config."
+            exit 1
+          }
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DescribePDF-windows
+          path: dist/DescribePDF/
+          if-no-files-found: error
