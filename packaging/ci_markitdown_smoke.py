@@ -24,7 +24,7 @@ def main() -> None:
             "OpenRouter", "sk-or-invalid-ci-key", "",
             "mistralai/mistral-medium-3-5", "English",
             True, False,  # use_markitdown ON, summary off
-            "google/gemini-2.5-flash-preview", "",
+            "google/gemini-3.5-flash", "",
             True, False, False,  # descriptions on, transcription off, summary-in-output off
             "", "", "", "", "", "",
             api_name="/convert_pdf_to_descriptive_markdown",

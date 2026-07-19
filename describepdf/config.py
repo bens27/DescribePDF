@@ -37,7 +37,7 @@ USER_ENV_FILE = USER_DIR / ".env"
 DEFAULT_CONFIG: Dict[str, Any] = {
     "openrouter_api_key": None,
     "or_vlm_model": "qwen/qwen2.5-vl-72b-instruct",
-    "or_summary_model": "google/gemini-2.5-flash-preview",
+    "or_summary_model": "google/gemini-3.5-flash",
 
     "provider": "openrouter",
     "qianfan_api_key": None,

@@ -385,15 +385,16 @@ def create_ui() -> gr.Blocks:
 
     # Define suggested model lists and languages
     suggested_vlms: List[str] = [
-        "qwen/qwen2.5-vl-72b-instruct", 
-        "google/gemini-2.5-pro-preview-03-25",
-        "openai/chatgpt-4o-latest"
+        "qwen/qwen2.5-vl-72b-instruct",
+        "qwen/qwen3-vl-32b-instruct",
+        "google/gemini-3.5-flash",
+        "mistralai/mistral-medium-3-5"
     ]
-    
+
     suggested_llms: List[str] = [
-        "google/gemini-2.5-flash-preview", 
-        "openai/chatgpt-4o-latest",
-        "anthropic/claude-3.5-sonnet"
+        "google/gemini-3.5-flash",
+        "anthropic/claude-sonnet-4.6",
+        "mistralai/mistral-medium-3-5"
     ]
     
     suggested_languages: List[str] = [

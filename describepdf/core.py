@@ -174,6 +174,14 @@ def convert_pdf_to_markdown(
             logger.error(msg)
             progress_callback(0.0, msg)
             return msg, None
+        vlm_model_name = str(cfg.get("vlm_model") or "")
+        if "qianfan" in vlm_model_name.lower():
+            msg = (f"Error: '{vlm_model_name}' is a Baidu Qianfan model and is not available on OpenRouter. "
+                   "In Settings, switch Provider to 'Baidu Qianfan (direct)' and enter the model name "
+                   "without the 'baidu/' prefix (e.g. 'qianfan-ocr-fast').")
+            logger.error(msg)
+            progress_callback(0.0, msg)
+            return msg, None
     elif provider == "qianfan":
         if not cfg.get("qianfan_api_key"):
             msg = "Error: Baidu Qianfan API Key is missing."

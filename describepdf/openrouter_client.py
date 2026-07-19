@@ -108,7 +108,9 @@ def call_openrouter_api(api_key: str, model: str, messages: List[Dict[str, Any]]
                     error_message = f"API Error ({e.response.status_code}): {e.response.text[:200]}"
             except json.JSONDecodeError:
                 error_message = f"API Error ({e.response.status_code}): {e.response.text[:200]}"
-                
+            if e.response.status_code == 404:
+                error_message += f" — model '{model}' was not found on OpenRouter; check the model name in Settings."
+
         raise ConnectionError(error_message)
 
 def get_vlm_description(api_key: str, model: str, prompt_text: str, image_bytes: bytes, mime_type: str) -> str:
