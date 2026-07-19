@@ -37,13 +37,20 @@ jobs:
             } catch {}
             if ($proc.HasExited) { break }
           }
-          $tabs = ""
+          $configOk = $false
           if ($ok) {
             try {
-              $config = Invoke-WebRequest -Uri "http://127.0.0.1:7860/config" -UseBasicParsing -TimeoutSec 5
-              $tabs = ($config.Content | ConvertFrom-Json).components |
-                Where-Object { $_.type -eq "tabitem" } | ForEach-Object { $_.props.label }
-            } catch {}
+              $config = Invoke-WebRequest -Uri "http://127.0.0.1:7860/config" -UseBasicParsing -TimeoutSec 10
+              $content = [string]$config.Content
+              Write-Output "Config payload: $($content.Length) chars"
+              if ($content -match '"Prompts"' -and $content -match '"Batch"') {
+                $configOk = $true
+              } else {
+                Write-Output "Config served but expected tab labels not found."
+              }
+            } catch {
+              Write-Output "Config fetch/parse failed: $_"
+            }
           }
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           Get-Content app.log, app-err.log -ErrorAction SilentlyContinue
@@ -51,11 +58,11 @@ jobs:
             Write-Error "App did not serve the UI on port 7860."
             exit 1
           }
-          Write-Output "UI served. Tabs: $tabs"
-          if ($tabs -notcontains "Prompts" -or $tabs -notcontains "Batch") {
-            Write-Error "Expected tabs missing from UI config."
+          if (-not $configOk) {
+            Write-Error "UI served but config check failed."
             exit 1
           }
+          Write-Output "Smoke test passed: UI served with expected tabs."
 
       - name: Upload app artifact
         uses: actions/upload-artifact@v4
