@@ -14,6 +14,7 @@ from typing import Tuple, Optional, Dict, Any, List
 
 from . import config
 from . import core
+from . import folder_picker
 from . import ollama_client
 from . import ui_prompts
 
@@ -150,6 +151,16 @@ def convert_pdf_to_descriptive_markdown(
         download_button_update,
         result_markdown if result_markdown else ""
     )
+
+def browse_pdf_folder() -> gr.update:
+    """Open a native picker for the batch input folder."""
+    path = folder_picker.pick_folder("Choose the folder containing your PDF files")
+    return gr.update(value=path) if path else gr.update()
+
+def browse_export_folder() -> gr.update:
+    """Open a native picker for the batch export destination."""
+    path = folder_picker.pick_folder("Choose the export destination folder")
+    return gr.update(value=path) if path else gr.update()
 
 def convert_folder_to_descriptive_markdowns(
     ui_folder_path: str,
@@ -318,16 +329,22 @@ def create_ui() -> gr.Blocks:
                     "export folder — filenames are kept unchanged. Settings and prompt templates "
                     "from the other tabs apply to the whole batch."
                 )
-                batch_folder_input = gr.Textbox(
-                    label="PDF Folder",
-                    placeholder="/path/to/folder/with/pdfs",
-                    info="Folder containing the PDF files to convert (top level only)"
-                )
-                batch_export_input = gr.Textbox(
-                    label="Export Destination",
-                    placeholder="/path/to/output/folder",
-                    info="Folder where the .md files are written (created if missing)"
-                )
+                with gr.Row():
+                    batch_folder_input = gr.Textbox(
+                        label="PDF Folder",
+                        placeholder="/path/to/folder/with/pdfs",
+                        info="Folder containing the PDF files to convert (top level only)",
+                        scale=5
+                    )
+                    batch_folder_browse = gr.Button("📂 Browse…", scale=1)
+                with gr.Row():
+                    batch_export_input = gr.Textbox(
+                        label="Export Destination",
+                        placeholder="/path/to/output/folder",
+                        info="Folder where the .md files are written (created if missing)",
+                        scale=5
+                    )
+                    batch_export_browse = gr.Button("📂 Browse…", scale=1)
                 batch_overwrite_checkbox = gr.Checkbox(
                     label="Overwrite existing .md files",
                     value=False,
@@ -406,6 +423,9 @@ def create_ui() -> gr.Blocks:
             inputs=conversion_inputs,
             outputs=conversion_outputs
         )
+
+        batch_folder_browse.click(fn=browse_pdf_folder, inputs=[], outputs=[batch_folder_input])
+        batch_export_browse.click(fn=browse_export_folder, inputs=[], outputs=[batch_export_input])
 
         batch_button.click(
             fn=convert_folder_to_descriptive_markdowns,
