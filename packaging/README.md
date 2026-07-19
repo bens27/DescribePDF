@@ -7,20 +7,28 @@ default browser. No Python installation is needed on the target machine.
 PyInstaller cannot cross-compile, so each platform's build must run on that
 platform.
 
-## Windows
+## Windows (standard: GitHub Actions)
+
+The standard Windows build runs in CI — no Windows machine needed:
+
+1. Trigger the **Build Windows app** workflow
+   (`.github/workflows/build-windows.yml`) from the Actions tab, with
+   `gh workflow run build-windows.yml --ref <branch>`, or by pushing a
+   `v*` tag.
+2. The workflow builds the exe on a `windows-latest` runner, then
+   smoke-tests it: launches the built app, waits for the UI to serve, and
+   verifies the expected tabs before uploading. A green run is a
+   launch-tested app.
+3. Download the `DescribePDF-windows` artifact from the run page (or
+   `gh run download <run-id> --name DescribePDF-windows`). Ship the whole
+   folder; the user runs `DescribePDF.exe` inside it (a shortcut is fine).
+
+### Windows (fallback: local build)
 
 On a Windows PC with [Python 3.13](https://www.python.org/downloads/)
-installed ("Add python.exe to PATH" checked during install):
-
-1. Get this repository onto the PC (git clone or a zip of the source).
-2. Open Command Prompt in the repository root and run:
-
-   ```bat
-   packaging\build-windows.bat
-   ```
-
-3. The app lands in `dist\DescribePDF\`. Ship or copy that whole folder;
-   the user runs `DescribePDF.exe` inside it (a shortcut to it is fine).
+installed ("Add python.exe to PATH" checked during install): get this
+repository onto the PC, open Command Prompt in the repository root, and run
+`packaging\build-windows.bat`. The app lands in `dist\DescribePDF\`.
 
 Notes for the PC user:
 
